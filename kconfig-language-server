@@ -327,10 +327,10 @@ main() {
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main
+    exit 0
 fi
 
-exit 0
-
+: << 'END_OF_DOCS'
 ================
 Kconfig Language
 ================
@@ -1146,3 +1146,5 @@ https://kernelnewbies.org/KernelProjects/kconfig-sat
 .. [9] https://www4.cs.fau.de/Publications/2011/tartler_11_eurosys.pdf
 .. [10] https://paulgazzillo.com/papers/esecfse21.pdf
 .. [11] https://github.com/paulgazz/kmax
+
+END_OF_DOCS
