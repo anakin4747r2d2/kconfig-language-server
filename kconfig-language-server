@@ -262,21 +262,80 @@ EOF
 )"
 }
 
+_DIAG_FILTER='{range:{start:{line:$line,character:$col},end:{line:$line,character:$end_col}},severity:$sev,message:$msg,source:"kconfig-ls"}'
+
+_make_diag() {
+    # _make_diag <line> <col> <end_col> <severity> <message>
+    jq -n \
+        --argjson line "$1" \
+        --argjson col "$2" \
+        --argjson end_col "$3" \
+        --argjson sev "$4" \
+        --arg msg "$5" \
+        "$_DIAG_FILTER"
+}
+
 _check_kconfig_diagnostics() {
     local uri="$1"
     local diags=()
     local line_nr=0
+    local in_help=0
+    local help_indent=""
 
     while IFS= read -r line; do
-        # check depends on / select / imply targets
-        if [[ "$line" =~ ^[[:space:]]*(depends[[:space:]]+on|select|imply)[[:space:]]+([A-Z_][A-Z0-9_]*) ]]; then
-            local sym="${BASH_REMATCH[2]}"
-            # check if symbol is defined anywhere in workspace
-            if [ -n "$ROOTPATH" ] && ! rg -q "^(config|menuconfig)[[:space:]]+${sym}$" "$ROOTPATH" 2>/dev/null; then
-                local col=$(echo "$line" | grep -bo "$sym" | head -1 | cut -d: -f1)
-                diags+=("{\"range\":{\"start\":{\"line\":${line_nr},\"character\":${col:-0}},\"end\":{\"line\":${line_nr},\"character\":$((${col:-0}+${#sym}))}},\"severity\":2,\"message\":\"Unknown symbol: ${sym}\",\"source\":\"kconfig-ls\"}")
+        # Track help blocks
+        if [[ "$line" =~ ^([[:space:]]*)(help|---help---)[[:space:]]*$ ]]; then
+            in_help=1
+            help_indent="${BASH_REMATCH[1]}	"
+            (( line_nr++ ))
+            continue
+        fi
+        if (( in_help )); then
+            if [[ -n "$line" && "$line" != "${help_indent}"* ]]; then
+                in_help=0
+            else
+                (( line_nr++ ))
+                continue
             fi
         fi
+
+        # Skip comments and blank lines
+        if [[ "$line" =~ ^[[:space:]]*# || -z "${line// }" ]]; then
+            (( line_nr++ ))
+            continue
+        fi
+
+        # --- Undefined symbols in depends on / select / imply ---
+        if [[ "$line" =~ ^[[:space:]]*(depends[[:space:]]+on|select|imply)[[:space:]]+(.*) ]]; then
+            local expr="${BASH_REMATCH[2]}"
+            expr="${expr%% if *}"
+            local sym
+            while read -r sym; do
+                [[ -z "$sym" ]] && continue
+                if [ -n "$ROOTPATH" ] && ! rg -q "^(config|menuconfig)[[:space:]]+${sym}$" "$ROOTPATH" 2>/dev/null; then
+                    local col end_col
+                    col=$(echo "$line" | grep -bo "\b${sym}\b" | head -1 | cut -d: -f1)
+                    col=${col:-0}
+                    end_col=$(( col + ${#sym} ))
+                    diags+=("$(_make_diag "$line_nr" "$col" "$end_col" 1 "Undefined symbol: $sym")")
+                fi
+            done < <(echo "$expr" | grep -oE '[A-Z_][A-Z0-9_]+')
+        fi
+
+        # --- range requires two values ---
+        if [[ "$line" =~ ^[[:space:]]*range[[:space:]]+(.*) ]]; then
+            local range_args="${BASH_REMATCH[1]}"
+            local word_count
+            word_count=$(echo "$range_args" | wc -w)
+            if (( word_count < 2 )); then
+                local col end_col
+                col=$(echo "$line" | grep -bo 'range' | head -1 | cut -d: -f1)
+                col=${col:-0}
+                end_col=$(( col + 5 ))
+                diags+=("$(_make_diag "$line_nr" "$col" "$end_col" 1 "range requires two values (min and max)")")
+            fi
+        fi
+
         (( line_nr++ ))
     done
 
