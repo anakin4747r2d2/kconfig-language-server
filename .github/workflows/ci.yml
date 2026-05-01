@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y bats jq ripgrep
+
+      - name: Run unit tests
+        run: bats --verbose-run test/test_kconfig-language-server.bats
+
+      - name: Run lsts integration tests
+        run: bats --verbose-run test/test_lsts.bats
