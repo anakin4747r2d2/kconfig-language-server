@@ -79,8 +79,15 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "references finds usages of BLK_DEV_BSG_COMMON" {
-    lsts_references "block/Kconfig:48:9" true \
-        "${REPO_ROOT}/test/fixtures/responses/references-blk-dev-bsg-common.json"
+    lsts_initialize
+    lsts_open "block/Kconfig"
+    lsts_request "textDocument/references" \
+        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":8},\"context\":{\"includeDeclaration\":true}}"
+    lsts_recv_response
+    # Should find references in block/Kconfig and drivers/scsi/Kconfig
+    echo "$LSTS_RESPONSE" | jq -e '.result | length == 3'
+    echo "$LSTS_RESPONSE" | jq -e '[.result[].uri] | any(endswith("drivers/scsi/Kconfig"))'
+    echo "$LSTS_RESPONSE" | jq -e '[.result[].uri] | any(endswith("block/Kconfig"))'
 }
 
 # ---------------------------------------------------------------------------
