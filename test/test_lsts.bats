@@ -130,7 +130,6 @@ teardown() {
         "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":8},\"context\":{\"includeDeclaration\":false}}"
     lsts_recv_response
     echo "$LSTS_RESPONSE" | jq -e '.result | length == 2'
-    # None of the results should be the declaration line itself
     echo "$LSTS_RESPONSE" | jq -e '[.result[] | select(.uri | endswith("block/Kconfig")) | .range.start.line] | all(. != 47)'
 }
 
@@ -180,21 +179,14 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "documentHighlight finds occurrences of symbol in file" {
-    lsts_initialize
-    lsts_open "block/Kconfig"
-    lsts_request "textDocument/documentHighlight" \
-        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":8}}"
-    lsts_recv_response
+    lsts_document_highlight "block/Kconfig:48:9" \
+        "${REPO_ROOT}/test/fixtures/responses/document-highlight-blk-dev-bsg-common.rpc.json"
     echo "$LSTS_RESPONSE" | jq -e '.result | length > 0'
 }
 
 @test "documentHighlight declaration has kind 3" {
-    lsts_initialize
-    lsts_open "block/Kconfig"
-    lsts_request "textDocument/documentHighlight" \
-        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":8}}"
-    lsts_recv_response
-    # The declaration line (config BLK_DEV_BSG_COMMON) should have kind=3 (Write)
+    lsts_document_highlight "block/Kconfig:48:9" \
+        "${REPO_ROOT}/test/fixtures/responses/document-highlight-blk-dev-bsg-common.rpc.json"
     echo "$LSTS_RESPONSE" | jq -e '[.result[] | select(.range.start.line == 47)] | any(.kind == 3)'
 }
 
@@ -203,31 +195,18 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "rename returns workspace edits for symbol" {
-    lsts_initialize
-    lsts_open "block/Kconfig"
-    lsts_request "textDocument/rename" \
-        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":9},\"newName\":\"BLK_DEV_BSG_COMMON_NEW\"}"
-    lsts_recv_response
+    lsts_rename "block/Kconfig:48:10" "BLK_DEV_BSG_COMMON_NEW"
     echo "$LSTS_RESPONSE" | jq -e '.result.changes | type == "object"'
     echo "$LSTS_RESPONSE" | jq -e '.result.changes | keys | length > 0'
 }
 
 @test "rename edits span multiple files" {
-    lsts_initialize
-    lsts_open "block/Kconfig"
-    lsts_request "textDocument/rename" \
-        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":9},\"newName\":\"BLK_DEV_BSG_COMMON_NEW\"}"
-    lsts_recv_response
-    # Both block/Kconfig and drivers/scsi/Kconfig should have edits
+    lsts_rename "block/Kconfig:48:10" "BLK_DEV_BSG_COMMON_NEW"
     echo "$LSTS_RESPONSE" | jq -e '.result.changes | keys | length > 1'
 }
 
 @test "rename edits use the new name" {
-    lsts_initialize
-    lsts_open "block/Kconfig"
-    lsts_request "textDocument/rename" \
-        "{\"textDocument\":{\"uri\":\"file://$LSTS_ROOT/block/Kconfig\"},\"position\":{\"line\":47,\"character\":9},\"newName\":\"BLK_DEV_BSG_COMMON_NEW\"}"
-    lsts_recv_response
+    lsts_rename "block/Kconfig:48:10" "BLK_DEV_BSG_COMMON_NEW"
     echo "$LSTS_RESPONSE" | jq -e '[.result.changes | to_entries[] | .value[] | .newText] | all(. == "BLK_DEV_BSG_COMMON_NEW")'
 }
 
@@ -238,19 +217,16 @@ teardown() {
 @test "didOpen with valid file pushes empty diagnostics" {
     lsts_initialize
     lsts_open "block/Kconfig"
-    # After didOpen, server pushes publishDiagnostics notification
     lsts_recv
     echo "$LSTS_RESPONSE" | jq -e '.method == "textDocument/publishDiagnostics"'
     echo "$LSTS_RESPONSE" | jq -e '.params.diagnostics | length == 0'
 }
 
-@test "didOpen with undefined symbol pushes diagnostic" {
+@test "diagnostics reports undefined symbol" {
     LSTS_ROOT="${REPO_ROOT}/test/fixtures"
     lsts_set_root "${REPO_ROOT}/test/fixtures"
-    lsts_initialize
-    lsts_open "invalid.Kconfig"
-    lsts_recv
-    echo "$LSTS_RESPONSE" | jq -e '.method == "textDocument/publishDiagnostics"'
+    lsts_diagnostics "invalid.Kconfig" \
+        "${REPO_ROOT}/test/fixtures/responses/diagnostics-invalid.rpc.json"
     echo "$LSTS_RESPONSE" | jq -e '.params.diagnostics | length > 0'
     echo "$LSTS_RESPONSE" | jq -e '.params.diagnostics[0].message | startswith("Undefined symbol:")'
 }
@@ -259,10 +235,9 @@ teardown() {
     lsts_initialize
     lsts_open "block/Kconfig"
     lsts_recv  # consume initial publishDiagnostics
-    # Send a didChange with content containing an undefined symbol
     local uri="file://$LSTS_ROOT/block/Kconfig"
     local new_text
-    new_text="$(printf 'config FOO\n\tbool \"Foo\"\n\tdepends on COMPLETELY_UNDEFINED_SYMBOL\n')"
+    new_text="$(printf 'config FOO\n\tbool "Foo"\n\tdepends on COMPLETELY_UNDEFINED_SYMBOL\n')"
     lsts_notify "textDocument/didChange" \
         "{\"textDocument\":{\"uri\":\"${uri}\",\"version\":2},\"contentChanges\":[{\"text\":$(echo "$new_text" | jq -Rs .)}]}"
     lsts_recv

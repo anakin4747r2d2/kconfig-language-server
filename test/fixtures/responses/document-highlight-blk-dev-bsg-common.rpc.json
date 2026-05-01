@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"result":[{"range":{"start":{"line":47,"character":7},"end":{"line":47,"character":25}},"kind":3},{"range":{"start":{"line":55,"character":8},"end":{"line":55,"character":26}},"kind":1}]}
