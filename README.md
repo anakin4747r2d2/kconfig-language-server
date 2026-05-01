@@ -1,35 +1,71 @@
-
 # Kconfig LSP
 
-A minimal language server for the Kconfig language used for build system
-configuration in many notable projects such as Linux, U-Boot, Zephyr and
-coreboot.
+A language server for the Kconfig language used for build system configuration
+in Linux, U-Boot, Zephyr, coreboot, and other projects.
 
-The language server should generally work in all of these projects and is
-mainly intended for using in Kconfig files.
+![CI](https://github.com/anakin4747r2d2/kconfig-language-server/actions/workflows/ci.yml/badge.svg?branch=feature/lsts-integration)
 
-Future support for Kconfig symbols in C, .config, defconfigs, and etc. is
-desired but not yet implemented.
+## Features
 
-This project mainly provides documentation for most tokens in Kconfig files but
-hopes to support most LSP methods in the future when I have time to work on it.
+| LSP Method | Status |
+|---|---|
+| `textDocument/hover` | ✅ |
+| `textDocument/definition` | ✅ |
+| `textDocument/completion` | ✅ |
+| `textDocument/references` | ✅ |
+| `textDocument/documentSymbol` | ✅ |
+| `textDocument/documentHighlight` | ✅ |
+| `textDocument/rename` | ✅ |
+| `textDocument/publishDiagnostics` | ✅ |
+| `textDocument/didOpen` | ✅ |
+| `textDocument/didChange` | ✅ |
 
-The documentation provided by the `hover` LSP method is provided by
-`Documentation/kbuild/kconfig-language.rst` if available otherwise is provided
-by the `kconfig-language.rst` that gets installed with this language server.
-The purpose of this is to try to rely on the most relevant documentation.
+### hover
 
-An indication (at least in my Neovim config) to where the documentation came
-from is if the hover is colourful. The `kconfig-language.rst` document provided
-by this repo wraps all Kconfig snippets in markdown to identify it. The
-language server protocol uses markdown for the `hover` method. My editor picks
-up these code blocks and colours them. However, if the documentation was found
-in the repo, it will contain no markdown code blocks (since it is .rst) and my
-editor does not colour them.
+Provides documentation for Kconfig keywords and symbols on hover. Documentation
+is sourced from `Documentation/kbuild/kconfig-language.rst` in the open
+project if available, otherwise falls back to the copy bundled with this server.
 
-The `kconfig-language.rst` file is derived from the file of the same name in
-the Linux kernel source code so this code base is also made available under
-GPL-2.0 (see LICENSE).
+### definition
+
+Go-to-definition for `config` and `menuconfig` symbols across the workspace.
+Handles both single and multiple definitions and computes correct character
+offsets for both `config` and `menuconfig` keyword lengths.
+
+### completion
+
+Completes all Kconfig keywords (`config`, `depends`, `select`, `bool`,
+`tristate`, etc.) and symbol names from the workspace.
+
+### references
+
+Finds all uses of a symbol: `depends on`, `select`, `imply`, and `default`
+references across the workspace. Respects `includeDeclaration`.
+
+### documentSymbol
+
+Lists all `config`, `menuconfig`, `menu`, and `choice` symbols defined in the
+current file.
+
+### documentHighlight
+
+Highlights all occurrences of the symbol under the cursor in the current file.
+Declarations are marked with kind Write (3), references with kind Text (1).
+
+### rename
+
+Renames a Kconfig symbol across all Kconfig files in the workspace, producing
+a `WorkspaceEdit` with per-file text edits.
+
+### publishDiagnostics
+
+Diagnostics are pushed automatically on `didOpen` and `didChange`:
+
+- **Undefined symbol** (error) — any symbol in `depends on`, `select`, or
+  `imply` that has no `config`/`menuconfig` definition in the workspace
+- **Bad `range`** (error) — `range` statement with fewer than two values
+
+Help block content is excluded from diagnostic checks.
 
 ## Demo
 
@@ -41,39 +77,36 @@ GPL-2.0 (see LICENSE).
 
 ## Dependencies
 
-This application relies on several command line tools, make sure you have
-installed:
-- rg
-- jq
-- awk
-- sed
-- bats (optional, for testing)
+- `rg` (ripgrep)
+- `jq`
+- `awk`
+- `sed`
+- `bats` (optional, for testing)
 
 ## Installation
 
-Being a single file bash script no building is required and installation is
-straight-forward. A `Makefile` is provided for easy installation.
+Being a single file bash script, no building is required.
 
 ```sh
 sudo make install
 # or
-sudo make dev-install # for installing as a symlink
+sudo make dev-install  # installs as a symlink
 # and
-sudo make uninstall # for uninstalling
+sudo make uninstall
 ```
 
 ## Testing
 
-This application is tested with `bats` test framework and ideally features
-should be added in the future following TDD practices.
+Tests use the [`bats`](https://github.com/bats-core/bats-core) framework and
+the [`lsts`](https://github.com/anakin4747/lsts) language server test library
+as a git submodule.
 
 ```sh
-make
-# or
 make test
 ```
 
-Note that some tests may be failing for features I have yet to add.
+This runs both the unit tests (`test/test_kconfig-language-server.bats`) and
+the end-to-end LSP integration tests (`test/test_lsts.bats`).
 
 ## Configuration
 
@@ -91,61 +124,19 @@ vim.lsp.enable('kconfig')
 
 ## Troubleshooting
 
-If the `kconfig-language-server` fails immediately, this may be due to missing
-dependencies or other issues. The language server may print an explanation on
-stdout. Running the language server by itself may print the error. If it just
-hangs and prints no output then it likely started fine. If it prints an error
-you can use that to see what caused the error. Its a very small application so
-reading it will likely be the fastest solution to your issue.
+If the server fails immediately, run it directly to see any error output:
 
 ```sh
 kconfig-language-server
 ```
 
-You can use `bash -x` to print every line as a sort of debug mode:
+For verbose debug output:
 
 ```sh
 bash -x kconfig-language-server
 ```
 
-## Supported LSP Methods
+## License
 
-| Method | Supported | Comment |
-|--------|-----------|---------|
-|textDocument/hover|true||
-|textDocument/definition|false|Higher priority feature|
-|textDocument/completion|false|Higher priority feature|
-|textDocument/references|false|Higher priority feature|
-|textDocument/rename|false|Higher priority feature|
-|textDocument/diagnostic|false|Higher priority feature|
-|callHierarchy/incomingCalls|false|Higher priority feature|
-|callHierarchy/outgoingCalls|false|Higher priority feature|
-|textDocument/codeAction|false|Not a priority|
-|textDocument/declaration|false|Not a priority|
-|textDocument/documentHighlight|false|Not a priority|
-|textDocument/documentSymbol|false|Not a priority|
-|textDocument/foldingRange|false|Not a priority|
-|textDocument/formatting|false|Not a priority|
-|textDocument/implementation|false|Not a priority|
-|textDocument/inlayHint|false|Not a priority|
-|textDocument/prepareTypeHierarchy|false|Not a priority|
-|textDocument/publishDiagnostics|false|Not a priority|
-|textDocument/rangeFormatting|false|Not a priority|
-|textDocument/rangesFormatting|false|Not a priority|
-|textDocument/semanticTokens/full|false|Not a priority|
-|textDocument/semanticTokens/full/delta|false|Not a priority|
-|textDocument/signatureHelp|false|Not a priority|
-|textDocument/typeDefinition|false|Not a priority|
-|typeHierarchy/subtypes|false|Not a priority|
-|typeHierarchy/supertypes|false|Not a priority|
-|window/logMessage|false|Not a priority|
-|window/showMessage|false|Not a priority|
-|window/showDocument|false|Not a priority|
-|window/showMessageRequest|false|Not a priority|
-|workspace/applyEdit|false|Not a priority|
-|workspace/configuration|false|Not a priority|
-|workspace/executeCommand|false|Not a priority|
-|workspace/inlayHint/refresh|false|Not a priority|
-|workspace/symbol|false|Not a priority|
-|workspace/workspaceFolders|false|Not a priority|
-
+GPL-2.0. The bundled `kconfig-language.rst` is derived from the Linux kernel
+source and is provided under the same license.
