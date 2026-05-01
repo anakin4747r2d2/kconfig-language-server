@@ -54,7 +54,7 @@ teardown() {
 
 @test "hover over known symbol returns non-empty documentation" {
     lsts_hover \
-        "drivers/mmc/core/Kconfig:38:8" \
+        "drivers/mmc/core/Kconfig:37:8" \
         "${REPO_ROOT}/test/fixtures/responses/hover-mmc-block.rpc.json"
 }
 

@@ -473,7 +473,7 @@ handle_references() {
     local line="$(echo "$1" | jq -r .params.position.line)"
     local character="$(echo "$1" | jq -r .params.position.character)"
     local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
-    local include_decl="$(echo "$1" | jq -r '.params.context.includeDeclaration // true')"
+    local include_decl="$(echo "$1" | jq -r 'if .params.context.includeDeclaration == false then "false" else "true" end')"
     local cword="$(get_cword "$((line + 1))" "$((character + 1))" "$file")"
 
     if [ -z "$cword" ] || [ -z "$ROOTPATH" ]; then

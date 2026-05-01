@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":2,"result":{"contents":{"kind":"markdown","value":"Say Y here to enable the MMC block device driver support.\nThis provides a block device driver, which you can use to\nmount the filesystem. Almost everyone wishing MMC support\nshould say Y or M here."}}}
