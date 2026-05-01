@@ -1,0 +1,8 @@
+config VALID_SYMBOL
+	bool "A valid symbol"
+	depends on NONEXISTENT_SYMBOL
+	select ANOTHER_FAKE_SYMBOL
+
+config ANOTHER_REAL_SYMBOL
+	tristate "Another real symbol"
+	range 1
