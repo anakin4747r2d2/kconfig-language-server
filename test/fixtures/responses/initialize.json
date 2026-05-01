@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"textDocumentSync":1,"hoverProvider":true,"definitionProvider":true,"completionProvider":{"triggerCharacters":[]},"referencesProvider":true,"documentSymbolProvider":true,"documentHighlightProvider":true,"renameProvider":true}}}

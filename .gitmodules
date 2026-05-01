@@ -1,0 +1,3 @@
+[submodule "test/lsts"]
+	path = test/lsts
+	url = https://github.com/anakin4747/lsts

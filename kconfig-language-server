@@ -3,15 +3,12 @@
 REQUIRED_TOOLS=(jq awk sed rg)
 
 exit_if_deps_not_installed() {
-
     MISSING_TOOLS=()
-
     for tool in "${REQUIRED_TOOLS[@]}"; do
         if ! command -v "$tool" > /dev/null 2>&1; then
             MISSING_TOOLS+=("$tool")
         fi
     done
-
     if [ ${#MISSING_TOOLS[@]} -ne 0 ]; then
         echo "kconfig-language-server is missing the following dependencies: ${MISSING_TOOLS[*]}"
         exit 1
@@ -20,6 +17,9 @@ exit_if_deps_not_installed() {
 
 ROOTPATH=""
 SPEC="$(realpath "$0")"
+
+# In-memory document store: maps URI -> text content
+declare -A OPEN_DOCS
 
 get_id() {
     local id="$(echo "$1" | jq -r .id)"
@@ -148,9 +148,6 @@ get_cword() {
 
     [ -z "$line" ] && return
 
-    # start at the character walk back to the start or until whitespace
-    # what happens when you don't see whitespace? assume cword starts at
-    # character 1
     for (( start=character-1; start>=1; start-- )); do
         case "${line:$start:1}" in
             [a-zA-Z0-9_-])
@@ -166,8 +163,6 @@ get_cword() {
         start=$((start + 1))
     fi
 
-    # now $start has the start of cword or just the start of a line
-    # walk to the end of the line until you end or hit whitespace
     for (( end=character; end < ${#line}; end++ )); do
         case "${line:$end:1}" in
             [a-zA-Z0-9_-])
@@ -210,8 +205,14 @@ handle_initialize() {
   "id": $id,
   "result": {
     "capabilities": {
+      "textDocumentSync": 1,
       "hoverProvider": true,
-      "definitionProvider": true
+      "definitionProvider": true,
+      "completionProvider": { "triggerCharacters": [] },
+      "referencesProvider": true,
+      "documentSymbolProvider": true,
+      "documentHighlightProvider": true,
+      "renameProvider": true
     }
   }
 }
@@ -219,6 +220,74 @@ EOF
 )"
 }
 
+handle_initialized() {
+    # no-op notification
+    :
+}
+
+handle_did_open() {
+    local uri="$(echo "$1" | jq -r .params.textDocument.uri)"
+    local text="$(echo "$1" | jq -r .params.textDocument.text)"
+    OPEN_DOCS["$uri"]="$text"
+    _push_diagnostics "$uri"
+}
+
+handle_did_change() {
+    local uri="$(echo "$1" | jq -r .params.textDocument.uri)"
+    local text="$(echo "$1" | jq -r '.params.contentChanges[-1].text')"
+    OPEN_DOCS["$uri"]="$text"
+    _push_diagnostics "$uri"
+}
+
+_push_diagnostics() {
+    local uri="$1"
+    local file="${uri#file://}"
+    local text="${OPEN_DOCS[$uri]}"
+    local diagnostics="[]"
+
+    if [ -n "$text" ]; then
+        diagnostics="$(echo "$text" | _check_kconfig_diagnostics "$uri")"
+    fi
+
+    send_response "$(cat <<EOF
+{
+  "jsonrpc": "2.0",
+  "method": "textDocument/publishDiagnostics",
+  "params": {
+    "uri": "$uri",
+    "diagnostics": $diagnostics
+  }
+}
+EOF
+)"
+}
+
+_check_kconfig_diagnostics() {
+    local uri="$1"
+    local diags=()
+    local line_nr=0
+
+    while IFS= read -r line; do
+        # check depends on / select / imply targets
+        if [[ "$line" =~ ^[[:space:]]*(depends[[:space:]]+on|select|imply)[[:space:]]+([A-Z_][A-Z0-9_]*) ]]; then
+            local sym="${BASH_REMATCH[2]}"
+            # check if symbol is defined anywhere in workspace
+            if [ -n "$ROOTPATH" ] && ! rg -q "^(config|menuconfig)[[:space:]]+${sym}$" "$ROOTPATH" 2>/dev/null; then
+                local col=$(echo "$line" | grep -bo "$sym" | head -1 | cut -d: -f1)
+                diags+=("{\"range\":{\"start\":{\"line\":${line_nr},\"character\":${col:-0}},\"end\":{\"line\":${line_nr},\"character\":$((${col:-0}+${#sym}))}},\"severity\":2,\"message\":\"Unknown symbol: ${sym}\",\"source\":\"kconfig-ls\"}")
+            fi
+        fi
+        (( line_nr++ ))
+    done
+
+    if [ ${#diags[@]} -eq 0 ]; then
+        echo "[]"
+    else
+        local joined
+        printf -v joined '%s,' "${diags[@]}"
+        echo "[${joined%,}]"
+    fi
+}
 
 handle_hover() {
     local id="$(get_id $1)"
@@ -226,21 +295,14 @@ handle_hover() {
     local character="$(echo "$1" | jq -r .params.position.character)"
     local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
     local cword="$(get_cword "$((line + 1))" "$((character + 1))" "$file")"
-    local docs="$(get_docs "$cword" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+    local docs="$(get_docs "$cword")"
 
-    send_response "$(cat <<EOF
-{
-  "jsonrpc": "2.0",
-  "id": $id,
-  "result": {
-    "contents": {
-      "kind": "markdown",
-      "value": "$docs"
-    }
-  }
-}
-EOF
-)"
+    local response
+    response="$(jq -n \
+        --argjson id "$id" \
+        --arg value "$docs" \
+        '{jsonrpc:"2.0",id:$id,result:{contents:{kind:"markdown",value:$value}}}')"
+    send_response "$response"
 }
 
 handle_definition() {
@@ -254,43 +316,257 @@ handle_definition() {
         ROOTPATH="$PWD/$2"
     fi
 
-    local found="$(rg -n "config $cword$" "$ROOTPATH")"
+    local found
+    found="$(rg -n "^(config|menuconfig)[[:space:]]+${cword}$" "$ROOTPATH" 2>/dev/null)"
 
-    if [ "$(wc -l <<< "$files")" -gt 1 ]; then
-        local multiline=1
+    if [ -z "$found" ]; then
+        send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":[]}"
         return
     fi
 
-    local uri="$(awk -F: '{print $1}' <<< "$found")"
-    local line_nr="$(awk -F: '{print $2}' <<< "$found")"
+    local count="$(echo "$found" | wc -l)"
 
-    # TODO:
-    # local match_start=
-    # local match_end=
-    #
-    # menuconfig (and possibly other keywords) breaks the hardcoded 8 below
+    if [ "$count" -eq 1 ]; then
+        # single result
+        local result_file="$(echo "$found" | awk -F: '{print $1}')"
+        local result_line_nr="$(echo "$found" | awk -F: '{print $2}')"
+        local result_line_text="$(echo "$found" | awk -F: '{print $3}')"
+        # figure out keyword length (config = 6, menuconfig = 10) plus space = keyword_len + 1
+        local keyword
+        keyword="$(echo "$result_line_text" | awk '{print $1}')"
+        local kw_len=${#keyword}
+        local char_start=$((kw_len + 1))
+        local char_end=$((char_start + ${#cword}))
+        local lsp_line=$((result_line_nr - 1))
 
-    cat << EOF
+        send_response "$(cat <<EOF
 {
-  "id": $id,
   "jsonrpc": "2.0",
+  "id": $id,
   "result": [
     {
-      "uri": "file://$uri",
+      "uri": "file://${result_file}",
       "range": {
-        "start": { "line": $line_nr, "character": 8 },
-        "end": { "line": $line_nr, "character": $((${#cword} + 7)) }
+        "start": { "line": $lsp_line, "character": $char_start },
+        "end": { "line": $lsp_line, "character": $char_end }
       }
     }
   ]
 }
 EOF
+)"
+    else
+        # multiple results — build JSON array
+        local items="[]"
+        while IFS=: read -r result_file result_line_nr result_line_rest; do
+            [ -z "$result_file" ] && continue
+            local result_line_text="${result_line_rest}"
+            local keyword
+            keyword="$(echo "$result_line_text" | awk '{print $1}')"
+            local kw_len=${#keyword}
+            local char_start=$((kw_len + 1))
+            local char_end=$((char_start + ${#cword}))
+            local lsp_line=$((result_line_nr - 1))
+            local item="{\"uri\":\"file://${result_file}\",\"range\":{\"start\":{\"line\":${lsp_line},\"character\":${char_start}},\"end\":{\"line\":${lsp_line},\"character\":${char_end}}}}"
+            items="$(echo "$items" | jq --argjson item "$item" '. + [$item]')"
+        done <<< "$found"
+
+        send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$items}"
+    fi
+}
+
+handle_completion() {
+    local id="$(get_id "$1")"
+    local line_nr="$(echo "$1" | jq -r .params.position.line)"
+    local character="$(echo "$1" | jq -r .params.position.character)"
+    local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
+    local prefix="$(get_cword "$((line_nr + 1))" "$((character + 1))" "$file")"
+
+    # Build completion list: keywords + symbol names from workspace
+    local KCONFIG_KEYWORDS=(
+        config menuconfig menu endmenu choice endchoice if endif source
+        bool tristate string hex int depends select imply default range
+        help prompt visible optional mainmenu comment def_bool def_tristate
+    )
+
+    local items="[]"
+
+    # Add keyword completions
+    for kw in "${KCONFIG_KEYWORDS[@]}"; do
+        if [[ -z "$prefix" || "$kw" == "$prefix"* ]]; then
+            items="$(echo "$items" | jq --arg kw "$kw" '. + [{"label":$kw,"kind":14}]')"
+        fi
+    done
+
+    # Add symbol completions from workspace if prefix looks like a symbol (uppercase)
+    if [[ "$prefix" =~ ^[A-Z_] ]] && [ -n "$ROOTPATH" ]; then
+        while IFS= read -r sym; do
+            items="$(echo "$items" | jq --arg sym "$sym" '. + [{"label":$sym,"kind":6}]')"
+        done < <(rg -h --no-line-number -o "^(?:config|menuconfig)\s+([A-Z_][A-Z0-9_]*)" \
+                   -r '$1' "$ROOTPATH" 2>/dev/null | sort -u | grep "^${prefix}")
+    fi
+
+    send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"isIncomplete\":false,\"items\":$items}}"
+}
+
+handle_references() {
+    local id="$(get_id "$1")"
+    local line="$(echo "$1" | jq -r .params.position.line)"
+    local character="$(echo "$1" | jq -r .params.position.character)"
+    local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
+    local include_decl="$(echo "$1" | jq -r '.params.context.includeDeclaration // true')"
+    local cword="$(get_cword "$((line + 1))" "$((character + 1))" "$file")"
+
+    if [ -z "$cword" ] || [ -z "$ROOTPATH" ]; then
+        send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":[]}"
+        return
+    fi
+
+    local items="[]"
+
+    # Find references: depends on X, select X, imply X, default X (when it's a symbol)
+    while IFS=: read -r ref_file ref_line ref_text; do
+        [ -z "$ref_file" ] && continue
+        local lsp_line=$((ref_line - 1))
+        # find character offset of the symbol in the line
+        local col
+        col="$(echo "$ref_text" | grep -bo "\b${cword}\b" | head -1 | cut -d: -f1)"
+        col="${col:-0}"
+        local item="{\"uri\":\"file://${ref_file}\",\"range\":{\"start\":{\"line\":${lsp_line},\"character\":${col}},\"end\":{\"line\":${lsp_line},\"character\":$((col + ${#cword}))}}}"
+        items="$(echo "$items" | jq --argjson item "$item" '. + [$item]')"
+    done < <(rg -n "\b(depends\s+on|select|imply|default)\s+\S*\b${cword}\b" "$ROOTPATH" 2>/dev/null)
+
+    # Optionally include the declaration itself
+    if [[ "$include_decl" == "true" ]]; then
+        while IFS=: read -r ref_file ref_line ref_text; do
+            [ -z "$ref_file" ] && continue
+            local lsp_line=$((ref_line - 1))
+            local keyword
+            keyword="$(echo "$ref_text" | awk '{print $1}')"
+            local kw_len=${#keyword}
+            local col=$((kw_len + 1))
+            local item="{\"uri\":\"file://${ref_file}\",\"range\":{\"start\":{\"line\":${lsp_line},\"character\":${col}},\"end\":{\"line\":${lsp_line},\"character\":$((col + ${#cword}))}}}"
+            items="$(echo "$items" | jq --argjson item "$item" '. + [$item]')"
+        done < <(rg -n "^(config|menuconfig)\s+${cword}$" "$ROOTPATH" 2>/dev/null)
+    fi
+
+    send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$items}"
+}
+
+handle_document_symbol() {
+    local id="$(get_id "$1")"
+    local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
+
+    # SymbolKind: Module=2, Namespace=3, Boolean=17 — use Variable=13 for all
+    local items="[]"
+
+    local line_nr=0
+    while IFS= read -r text_line; do
+        if [[ "$text_line" =~ ^(config|menuconfig|menu|choice)[[:space:]]+([A-Z_a-z0-9_\"]+) ]]; then
+            local kw="${BASH_REMATCH[1]}"
+            local name="${BASH_REMATCH[2]}"
+            # Remove surrounding quotes for menu names
+            name="${name//\"/}"
+            local kind=13  # Variable
+            [[ "$kw" == "menu" ]] && kind=3
+            [[ "$kw" == "choice" ]] && kind=5
+            local kw_len=${#kw}
+            local col_start=$((kw_len + 1))
+            local col_end=$((col_start + ${#name}))
+            local item="{\"name\":\"${name}\",\"kind\":${kind},\"location\":{\"uri\":\"file://${file}\",\"range\":{\"start\":{\"line\":${line_nr},\"character\":${col_start}},\"end\":{\"line\":${line_nr},\"character\":${col_end}}}}}"
+            items="$(echo "$items" | jq --argjson item "$item" '. + [$item]')"
+        fi
+        (( line_nr++ ))
+    done < "$file"
+
+    send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$items}"
+}
+
+handle_document_highlight() {
+    local id="$(get_id "$1")"
+    local line="$(echo "$1" | jq -r .params.position.line)"
+    local character="$(echo "$1" | jq -r .params.position.character)"
+    local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
+    local cword="$(get_cword "$((line + 1))" "$((character + 1))" "$file")"
+
+    if [ -z "$cword" ]; then
+        send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":[]}"
+        return
+    fi
+
+    local items="[]"
+    local line_nr=0
+    while IFS= read -r text_line; do
+        local col=0
+        local remaining="$text_line"
+        local offset=0
+        while [[ "$remaining" =~ (^|[^A-Z0-9_a-z])${cword}([^A-Z0-9_a-z]|$) ]]; do
+            local match_pos
+            match_pos="$(echo "$remaining" | grep -bo "\b${cword}\b" | head -1 | cut -d: -f1)"
+            [ -z "$match_pos" ] && break
+            local abs_col=$((offset + match_pos))
+            local kind=1  # Text
+            # Write kind=2 (Read) for decl lines
+            [[ "$text_line" =~ ^(config|menuconfig)[[:space:]] ]] && kind=3
+            local item="{\"range\":{\"start\":{\"line\":${line_nr},\"character\":${abs_col}},\"end\":{\"line\":${line_nr},\"character\":$((abs_col + ${#cword}))}},\"kind\":${kind}}"
+            items="$(echo "$items" | jq --argjson item "$item" '. + [$item]')"
+            offset=$((abs_col + ${#cword}))
+            remaining="${text_line:$offset}"
+            # guard infinite loop
+            [[ ${#remaining} -eq 0 ]] && break
+        done
+        (( line_nr++ ))
+    done < "$file"
+
+    send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":$items}"
+}
+
+handle_rename() {
+    local id="$(get_id "$1")"
+    local line="$(echo "$1" | jq -r .params.position.line)"
+    local character="$(echo "$1" | jq -r .params.position.character)"
+    local file="$(echo "$1" | jq -r .params.textDocument.uri | sed 's|file://||')"
+    local new_name="$(echo "$1" | jq -r .params.newName)"
+    local cword="$(get_cword "$((line + 1))" "$((character + 1))" "$file")"
+
+    if [ -z "$cword" ] || [ -z "$ROOTPATH" ]; then
+        send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":null}"
+        return
+    fi
+
+    local changes="{}"
+
+    # Find all files that mention this symbol
+    while IFS= read -r ref_file; do
+        [ -z "$ref_file" ] && continue
+        local file_uri="file://${ref_file}"
+        local edits="[]"
+        local lnr=0
+        while IFS= read -r text_line; do
+            local offset=0
+            local remaining="$text_line"
+            while true; do
+                local col
+                col="$(echo "$remaining" | grep -bo "\b${cword}\b" | head -1 | cut -d: -f1)"
+                [ -z "$col" ] && break
+                local abs_col=$((offset + col))
+                local edit="{\"range\":{\"start\":{\"line\":${lnr},\"character\":${abs_col}},\"end\":{\"line\":${lnr},\"character\":$((abs_col + ${#cword}))}},\"newText\":\"${new_name}\"}"
+                edits="$(echo "$edits" | jq --argjson e "$edit" '. + [$e]')"
+                offset=$((abs_col + ${#cword}))
+                remaining="${text_line:$offset}"
+                [[ ${#remaining} -eq 0 ]] && break
+            done
+            (( lnr++ ))
+        done < "$ref_file"
+        changes="$(echo "$changes" | jq --arg uri "$file_uri" --argjson edits "$edits" '. + {($uri): $edits}')"
+    done < <(rg -l "\b${cword}\b" "$ROOTPATH" 2>/dev/null)
+
+    send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"changes\":$changes}}"
 }
 
 # }}}
 
 main() {
-
     exit_if_deps_not_installed
 
     while true; do
@@ -309,11 +585,35 @@ main() {
             "initialize")
                 handle_initialize "$body"
                 ;;
+            "initialized")
+                handle_initialized "$body"
+                ;;
             "textDocument/hover")
                 handle_hover "$body"
                 ;;
             "textDocument/definition")
                 handle_definition "$body"
+                ;;
+            "textDocument/didOpen")
+                handle_did_open "$body"
+                ;;
+            "textDocument/didChange")
+                handle_did_change "$body"
+                ;;
+            "textDocument/completion")
+                handle_completion "$body"
+                ;;
+            "textDocument/references")
+                handle_references "$body"
+                ;;
+            "textDocument/documentSymbol")
+                handle_document_symbol "$body"
+                ;;
+            "textDocument/documentHighlight")
+                handle_document_highlight "$body"
+                ;;
+            "textDocument/rename")
+                handle_rename "$body"
                 ;;
             "shutdown")
                 send_response "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":null}"
