@@ -67,6 +67,30 @@ Diagnostics are pushed automatically on `didOpen` and `didChange`:
 
 Help block content is excluded from diagnostic checks.
 
+## Try it out
+
+The quickest way to try the language server against a real codebase is with the
+provided Nix apps. Run from the root of a Linux, Zephyr, or U-Boot source tree:
+
+```sh
+# With Neovim
+nix run github:anakin4747r2d2/kconfig-language-server#tryout
+
+# With VSCodium
+nix run github:anakin4747r2d2/kconfig-language-server#tryout-vscode
+```
+
+Each command picks a random Kconfig file from the tree, starts the language
+server, and opens it with the LSP already configured.
+
+> **Requirements:** [Nix](https://nixos.org/download/) must be installed with
+> the `nix-command` and `flakes` experimental features enabled. Add the
+> following to `~/.config/nix/nix.conf` (or `/etc/nix/nix.conf`):
+>
+> ```
+> experimental-features = nix-command flakes
+> ```
+
 ## Demo
 
 <div align="center">
