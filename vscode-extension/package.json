@@ -1,0 +1,30 @@
+{
+  "name": "kconfig-language-server",
+  "displayName": "kconfig-language-server",
+  "description": "Kconfig Language Server for Linux, Zephyr, U-Boot, and coreboot",
+  "version": "0.0.1",
+  "publisher": "anakin4747",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "kconfig",
+        "aliases": ["Kconfig", "kconfig"],
+        "filenames": ["Kconfig"],
+        "extensions": [".kconfig"]
+      }
+    ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0",
+    "esbuild": "^0.20.0"
+  }
+}
